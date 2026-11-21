@@ -1,0 +1,6 @@
+{
+  "name": "SmartStock AI",
+  "description": "Responsive inventory operations, stock movements, supplier purchase orders, and AI-assisted demand insights for small businesses.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
