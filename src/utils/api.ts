@@ -39,25 +39,48 @@ export async function apiFetch<T>(url: string, options: RequestInit = {}): Promi
     headers.set('Authorization', `Bearer ${inMemoryToken}`);
   }
 
-  const res = await fetch(url, {
-    ...options,
-    headers,
-    credentials: 'include',
-  });
+  const timeoutMs = url.includes('/api/ai/') ? 45000 : 15000;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      ...options,
+      headers,
+      credentials: 'include',
+      signal: options.signal ?? controller.signal,
+    });
+  } catch (err) {
+    if (err instanceof Error && err.name === 'AbortError') {
+      throw new Error('Request timed out while waiting for the server. Please try again.');
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+
+  const contentType = res.headers.get('content-type') || '';
   const text = await res.text();
   let data: Record<string, unknown> = {};
+  let parsedAsJson = !text;
   if (text) {
     try {
-      data = JSON.parse(text) as Record<string, unknown>;
+      const parsed = JSON.parse(text) as unknown;
+      if (parsed && typeof parsed === 'object') {
+        data = parsed as Record<string, unknown>;
+        parsedAsJson = true;
+      }
     } catch {
       data = { error: text };
     }
   }
 
   if (!res.ok) {
-    const message =
-      typeof data.error === 'string' && data.error.trim()
+    const looksLikeHtml = contentType.includes('text/html') || /^\s*<!doctype|^\s*<html/i.test(text);
+    const message = looksLikeHtml
+      ? `API route returned an HTML error page (HTTP ${res.status}). Check server deployment logs.`
+      : typeof data.error === 'string' && data.error.trim()
         ? data.error
         : `Request failed with status ${res.status}`;
     const err = new Error(message) as Error & {
@@ -69,6 +92,12 @@ export async function apiFetch<T>(url: string, options: RequestInit = {}): Promi
       err.fieldErrors = data.fieldErrors as Record<string, string>;
     }
     throw err;
+  }
+
+  if (text && (!parsedAsJson || contentType.includes('text/html'))) {
+    throw new Error(
+      'Server returned a web page instead of API data. Verify API routing and deployment configuration.'
+    );
   }
 
   return data as T;

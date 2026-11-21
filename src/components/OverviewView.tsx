@@ -27,6 +27,9 @@ export function OverviewView({
   onDraftPOFromAlert,
   onOpenChatbot,
   loading,
+  error,
+  onRetry,
+  onSignOut,
 }: {
   data: DashboardData | null;
   insights: AIInsightsPayload | null;
@@ -36,10 +39,13 @@ export function OverviewView({
   onDraftPOFromAlert: (alert: LowStockAlert) => void;
   onOpenChatbot: () => void;
   loading: boolean;
+  error?: string | null;
+  onRetry?: () => void;
+  onSignOut?: () => void;
 }) {
   const [showHealthDetails, setShowHealthDetails] = useState(false);
 
-  if (loading || !data) {
+  if (loading) {
     return (
       <div className="space-y-6">
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
@@ -50,6 +56,47 @@ export function OverviewView({
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           <div className="lg:col-span-2 h-80 bg-white border border-slate-200 rounded-xl animate-pulse" />
           <div className="h-80 bg-white border border-slate-200 rounded-xl animate-pulse" />
+        </div>
+      </div>
+    );
+  }
+
+  if (!data) {
+    return (
+      <div
+        role="alert"
+        className="bg-white border border-red-200 rounded-xl p-6 max-w-2xl mx-auto my-6 space-y-4"
+      >
+        <div className="flex items-start gap-3">
+          <div className="w-10 h-10 rounded-lg bg-red-50 border border-red-200 flex items-center justify-center text-red-600 shrink-0">
+            <AlertTriangle className="w-5 h-5" aria-hidden="true" />
+          </div>
+          <div>
+            <h2 className="text-base font-semibold text-slate-900">Unable to load dashboard workspace</h2>
+            <p className="mt-1 text-sm text-slate-600 leading-relaxed">
+              {error || 'The dashboard snapshot did not load cleanly from the server.'}
+            </p>
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center gap-2.5 pt-1">
+          {onRetry && (
+            <button
+              type="button"
+              onClick={onRetry}
+              className="px-4 py-2 text-sm font-semibold text-white bg-teal-600 rounded-lg hover:bg-teal-700 transition-colors"
+            >
+              Retry Loading Dashboard
+            </button>
+          )}
+          {onSignOut && (
+            <button
+              type="button"
+              onClick={onSignOut}
+              className="px-4 py-2 text-sm font-medium text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 transition-colors"
+            >
+              Return to Sign In
+            </button>
+          )}
         </div>
       </div>
     );

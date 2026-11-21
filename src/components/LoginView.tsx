@@ -17,8 +17,10 @@ type AuthMode = 'signin' | 'signup' | 'reset';
 
 export function LoginView({
   onLoginSuccess,
+  externalError,
 }: {
   onLoginSuccess: (user: User) => void;
+  externalError?: string | null;
 }) {
   const [mode, setMode] = useState<AuthMode>('signin');
 
@@ -45,15 +47,20 @@ export function LoginView({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
-  const [ephemeralStorage, setEphemeralStorage] = useState(false);
+  const [storageWarning, setStorageWarning] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
     fetch('/api/health')
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data: { ephemeralStorage?: boolean } | null) => {
-        if (active && data?.ephemeralStorage) {
-          setEphemeralStorage(true);
+      .then((res) => res.json().catch(() => null))
+      .then((data: { ok?: boolean; error?: string; ephemeralStorage?: boolean } | null) => {
+        if (!active || !data) return;
+        if (data.ok === false && data.error) {
+          setStorageWarning(data.error);
+        } else if (data.ephemeralStorage) {
+          setStorageWarning(
+            'Persistent database not configured on Vercel: connect a PostgreSQL database (DATABASE_URL or POSTGRES_URL via Vercel Storage, Neon, or Supabase) and set SESSION_SECRET in Project Environment Variables, then redeploy so accounts persist across cold starts.'
+          );
         }
       })
       .catch(() => {
@@ -91,6 +98,9 @@ export function LoginView({
         method: 'POST',
         body: JSON.stringify({ email: trimmed, password, rememberMe }),
       });
+      if (!data?.token || !data?.user?.id) {
+        throw new Error('Authentication succeeded without a valid workspace session payload.');
+      }
       setAuthToken(data.token);
       onLoginSuccess(data.user);
     } catch (err) {
@@ -132,6 +142,9 @@ export function LoginView({
           rememberMe,
         }),
       });
+      if (!data?.token || !data?.user?.id) {
+        throw new Error('Workspace created, but the server did not return a valid session payload.');
+      }
       setAuthToken(data.token);
       onLoginSuccess(data.user);
     } catch (err) {
@@ -269,26 +282,23 @@ export function LoginView({
             ))}
           </div>
 
-          {ephemeralStorage && (
+          {storageWarning && (
             <div
               role="status"
               className="mb-4 flex items-start gap-2.5 p-3 rounded-lg bg-amber-50 border border-amber-200 text-xs text-amber-900"
             >
               <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5 text-amber-600" aria-hidden="true" />
-              <span>
-                <strong>Serverless Temporary Storage:</strong> This Vercel preview stores SQLite data in ephemeral{' '}
-                <code>/tmp</code>, which resets across cold starts and serverless instances. Accounts created here may not persist across sign-ins unless deployed on a persistent Node/Docker host or connected to an external database.
-              </span>
+              <span>{storageWarning}</span>
             </div>
           )}
 
-          {error && (
+          {(error || externalError) && (
             <div
               role="alert"
               className="mb-4 flex items-start gap-2.5 p-3 rounded-lg bg-red-50 border border-red-200 text-sm text-red-800"
             >
               <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-red-600" aria-hidden="true" />
-              <span>{error}</span>
+              <span>{error || externalError}</span>
             </div>
           )}
 

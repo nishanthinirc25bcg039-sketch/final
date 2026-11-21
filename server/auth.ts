@@ -3,18 +3,20 @@ import type { NextFunction, Request, Response } from 'express';
 import type { User, UserRole } from '../src/shared/types.js';
 
 const EPHEMERAL_SECRET = crypto.randomBytes(32).toString('hex');
-let fallbackSecretProvider: (() => string) | null = null;
+let fallbackSecretProvider: (() => Promise<string> | string) | null = null;
 
-export function registerFallbackSecretProvider(provider: () => string) {
+export function registerFallbackSecretProvider(provider: () => Promise<string> | string) {
   fallbackSecretProvider = provider;
 }
 
-function getSigningSecret(): string {
+async function getSigningSecret(): Promise<string> {
   const envSecret = process.env.SESSION_SECRET?.trim();
-  if (envSecret && envSecret.length >= 16) return envSecret;
+  if (envSecret && envSecret.length >= 16 && !/^CHANGE_ME/i.test(envSecret)) {
+    return envSecret;
+  }
   if (fallbackSecretProvider) {
     try {
-      const persisted = fallbackSecretProvider();
+      const persisted = await fallbackSecretProvider();
       if (persisted && persisted.length >= 16) return persisted;
     } catch {
       // fall back to process secret
@@ -63,10 +65,10 @@ export interface TokenPayload {
   exp: number;
 }
 
-export function signAuthToken(
+export async function signAuthToken(
   user: { id: string; businessId: string; role: UserRole },
   rememberMe = false
-): string {
+): Promise<string> {
   const ttlMs = rememberMe ? 7 * 24 * 60 * 60 * 1000 : 12 * 60 * 60 * 1000;
   const payload: TokenPayload = {
     sub: user.id,
@@ -75,19 +77,21 @@ export function signAuthToken(
     exp: Date.now() + ttlMs,
   };
   const payloadB64 = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
+  const secret = await getSigningSecret();
   const sig = crypto
-    .createHmac('sha256', getSigningSecret())
+    .createHmac('sha256', secret)
     .update(payloadB64)
     .digest('base64url');
   return `${payloadB64}.${sig}`;
 }
 
-export function verifyAuthToken(token: string): TokenPayload | null {
+export async function verifyAuthToken(token: string): Promise<TokenPayload | null> {
   const parts = token.split('.');
   if (parts.length !== 2) return null;
   const [payloadB64, sig] = parts;
+  const secret = await getSigningSecret();
   const expectedSig = crypto
-    .createHmac('sha256', getSigningSecret())
+    .createHmac('sha256', secret)
     .update(payloadB64)
     .digest('base64url');
   const sigBuf = Buffer.from(sig);
@@ -149,31 +153,35 @@ export function isValidMutationOrigin(req: Request): boolean {
   }
 }
 
-export function createAuthMiddleware(getUserById: (id: string) => User | null) {
-  return function requireAuth(req: AuthenticatedRequest, res: Response, next: NextFunction) {
-    const { token, viaCookie } = extractRequestToken(req);
-    if (!token) {
-      res.status(401).json({ error: 'Authentication required. Please sign in.' });
-      return;
-    }
-    if (viaCookie && ['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) {
-      if (!isValidMutationOrigin(req)) {
-        res.status(403).json({ error: 'Invalid request origin.' });
+export function createAuthMiddleware(getUserById: (id: string) => Promise<User | null> | User | null) {
+  return async function requireAuth(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+    try {
+      const { token, viaCookie } = extractRequestToken(req);
+      if (!token) {
+        res.status(401).json({ error: 'Authentication required. Please sign in.' });
         return;
       }
+      if (viaCookie && ['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) {
+        if (!isValidMutationOrigin(req)) {
+          res.status(403).json({ error: 'Invalid request origin.' });
+          return;
+        }
+      }
+      const payload = await verifyAuthToken(token);
+      if (!payload) {
+        res.status(401).json({ error: 'Session expired or invalid. Please sign in again.' });
+        return;
+      }
+      const user = await getUserById(payload.sub);
+      if (!user || !user.active || user.businessId !== payload.businessId) {
+        res.status(401).json({ error: 'Account is inactive or unavailable.' });
+        return;
+      }
+      req.authUser = user;
+      next();
+    } catch (err) {
+      next(err);
     }
-    const payload = verifyAuthToken(token);
-    if (!payload) {
-      res.status(401).json({ error: 'Session expired or invalid. Please sign in again.' });
-      return;
-    }
-    const user = getUserById(payload.sub);
-    if (!user || !user.active || user.businessId !== payload.businessId) {
-      res.status(401).json({ error: 'Account is inactive or unavailable.' });
-      return;
-    }
-    req.authUser = user;
-    next();
   };
 }
 

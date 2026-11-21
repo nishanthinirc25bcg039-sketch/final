@@ -1,5 +1,6 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  AlertTriangle,
   ArrowLeftRight,
   BarChart3,
   Bell,
@@ -83,9 +84,84 @@ const INITIAL_SETTINGS: AppSettings = {
   poStatusAlertsEnabled: true,
 };
 
+interface WorkspaceErrorBoundaryState {
+  hasError: boolean;
+  message: string;
+}
+
+class WorkspaceErrorBoundary extends React.Component<
+  { children: React.ReactNode; onSignOut?: () => void },
+  WorkspaceErrorBoundaryState
+> {
+  state: WorkspaceErrorBoundaryState = { hasError: false, message: '' };
+
+  static getDerivedStateFromError(error: Error): WorkspaceErrorBoundaryState {
+    return {
+      hasError: true,
+      message: error?.message || 'An unexpected rendering error occurred.',
+    };
+  }
+
+  componentDidCatch(error: Error) {
+    console.error('SmartStock UI render error:', error);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="min-h-screen bg-slate-50 flex items-center justify-center p-6">
+          <div className="max-w-md w-full bg-white border border-red-200 rounded-xl p-6 space-y-4 shadow-xs">
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 rounded-lg bg-red-50 border border-red-200 flex items-center justify-center text-red-600 shrink-0">
+                <AlertTriangle className="w-5 h-5" aria-hidden="true" />
+              </div>
+              <div>
+                <h2 className="text-base font-semibold text-slate-900">Unable to render workspace view</h2>
+                <p className="mt-1 text-sm text-slate-600 leading-relaxed">{this.state.message}</p>
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-2.5">
+              <button
+                type="button"
+                onClick={() => window.location.reload()}
+                className="px-4 py-2 text-sm font-semibold text-white bg-teal-600 rounded-lg hover:bg-teal-700"
+              >
+                Reload Page
+              </button>
+              {this.props.onSignOut && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    this.setState({ hasError: false, message: '' });
+                    this.props.onSignOut?.();
+                  }}
+                  className="px-4 py-2 text-sm font-medium text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50"
+                >
+                  Sign Out
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+interface WorkspaceBootstrapResponse {
+  dashboard: DashboardData;
+  products: Product[];
+  transactions: StockTransaction[];
+  suppliers: Supplier[];
+  purchaseOrders: PurchaseOrder[];
+  alerts: LowStockAlert[];
+}
+
 export default function App() {
   const [authChecking, setAuthChecking] = useState(true);
   const [user, setUser] = useState<User | null>(null);
+  const [authError, setAuthError] = useState<string | null>(null);
   const [activeNav, setActiveNav] = useState<NavId>('overview');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
@@ -106,6 +182,8 @@ export default function App() {
 
   // Global UI Overlays
   const [loadingWorkspace, setLoadingWorkspace] = useState(false);
+  const [workspaceError, setWorkspaceError] = useState<string | null>(null);
+  const justSignedInRef = useRef(false);
   const [globalSearch, setGlobalSearch] = useState('');
   const [searchFocused, setSearchFocused] = useState(false);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
@@ -137,6 +215,7 @@ export default function App() {
     setAlerts([]);
     setSettings(INITIAL_SETTINGS);
     setInsights(null);
+    setWorkspaceError(null);
     setGlobalSearch('');
     setStockModalOpen(false);
     setStockModalProductId(undefined);
@@ -154,6 +233,9 @@ export default function App() {
         method: 'POST',
         body: JSON.stringify({ periodDays: period }),
       });
+      if (!res?.insights) {
+        throw new Error('Unexpected AI insights response format.');
+      }
       setInsights(res.insights);
     } catch (err) {
       setInsights({
@@ -173,34 +255,42 @@ export default function App() {
   }, []);
 
   const loadWorkspaceData = useCallback(
-    async (daysOverride?: number) => {
+    async (daysOverride?: number): Promise<boolean> => {
       const d = daysOverride ?? dashboardDays;
       setLoadingWorkspace(true);
+      setWorkspaceError(null);
       try {
-        const [dashRes, prodRes, txRes, supRes, poRes, alertRes] = await Promise.all([
-          apiFetch<DashboardData>(`/api/dashboard?days=${d}`),
-          apiFetch<{ products: Product[] }>('/api/products'),
-          apiFetch<{ transactions: StockTransaction[] }>('/api/transactions'),
-          apiFetch<{ suppliers: Supplier[] }>('/api/suppliers'),
-          apiFetch<{ purchaseOrders: PurchaseOrder[] }>('/api/purchase-orders'),
-          apiFetch<{ alerts: LowStockAlert[] }>('/api/alerts'),
-        ]);
-        setDashboard(dashRes);
-        setSettings(dashRes.settings);
-        setProducts(prodRes.products);
-        setTransactions(txRes.transactions);
-        setSuppliers(supRes.suppliers);
-        setPurchaseOrders(poRes.purchaseOrders);
-        setAlerts(alertRes.alerts);
+        const bootRes = await apiFetch<WorkspaceBootstrapResponse>(`/api/workspace/bootstrap?days=${d}`);
+        if (!bootRes?.dashboard?.metrics || !bootRes?.dashboard?.settings) {
+          throw new Error('Server returned an incomplete workspace snapshot.');
+        }
+        setDashboard(bootRes.dashboard);
+        setSettings(bootRes.dashboard.settings);
+        setProducts(Array.isArray(bootRes.products) ? bootRes.products : []);
+        setTransactions(Array.isArray(bootRes.transactions) ? bootRes.transactions : []);
+        setSuppliers(Array.isArray(bootRes.suppliers) ? bootRes.suppliers : []);
+        setPurchaseOrders(Array.isArray(bootRes.purchaseOrders) ? bootRes.purchaseOrders : []);
+        setAlerts(Array.isArray(bootRes.alerts) ? bootRes.alerts : []);
+        justSignedInRef.current = false;
+        return true;
       } catch (err) {
         const status = (err as Error & { status?: number })?.status;
         if (status === 401) {
+          const message = justSignedInRef.current
+            ? 'Signed in, but the workspace request returned 401 (session could not be verified across requests). On Vercel serverless previews, ephemeral /tmp SQLite is not shared across concurrent serverless instances or cold starts. Deploy on a persistent Node host or configure a shared database and SESSION_SECRET.'
+            : 'Your workspace session expired. Please sign in again.';
+          justSignedInRef.current = false;
           setAuthToken(null);
+          setAuthError(message);
           setUser(null);
           clearWorkspaceState();
-        } else {
-          notify(err instanceof Error ? err.message : 'Unable to load inventory workspace.', 'error');
+          return false;
         }
+        justSignedInRef.current = false;
+        const message = err instanceof Error ? err.message : 'Unable to load inventory workspace.';
+        setWorkspaceError(message);
+        notify(message, 'error');
+        return false;
       } finally {
         setLoadingWorkspace(false);
       }
@@ -208,15 +298,17 @@ export default function App() {
     [dashboardDays, notify, clearWorkspaceState]
   );
 
-  // Restore session via HttpOnly cookie if Remember Me was active
+  // Restore session via HttpOnly cookie or tab session token
   useEffect(() => {
     let cancelled = false;
     apiFetch<{ user: User | null }>('/api/auth/me')
       .then((res) => {
-        if (!cancelled && res.user) setUser(res.user);
+        if (!cancelled && res?.user?.id) {
+          setUser(res.user);
+        }
       })
       .catch(() => {
-        // Not signed in
+        // Not signed in or endpoint temporarily unavailable
       })
       .finally(() => {
         if (!cancelled) setAuthChecking(false);
@@ -227,10 +319,16 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (user) {
-      loadWorkspaceData(dashboardDays);
-      loadInsights(aiPeriodDays);
-    }
+    if (!user) return;
+    let cancelled = false;
+    loadWorkspaceData(dashboardDays).then((ok) => {
+      if (ok && !cancelled) {
+        loadInsights(aiPeriodDays);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [user, dashboardDays, aiPeriodDays, loadWorkspaceData, loadInsights]);
 
   const handleLogout = async () => {
@@ -239,13 +337,17 @@ export default function App() {
     } catch {
       // ignore
     }
+    justSignedInRef.current = false;
     setAuthToken(null);
+    setAuthError(null);
     setUser(null);
     clearWorkspaceState();
   };
 
   const handleWorkspaceDeleted = () => {
+    justSignedInRef.current = false;
     setAuthToken(null);
+    setAuthError(null);
     setUser(null);
     clearWorkspaceState();
     notify('Workspace and all business data permanently deleted.');
@@ -331,23 +433,29 @@ export default function App() {
 
   if (!user) {
     return (
-      <MotionConfig reducedMotion="user">
-        <LoginView
-          onLoginSuccess={(loggedInUser) => {
-            clearWorkspaceState();
-            setUser(loggedInUser);
-            setActiveNav('overview');
-          }}
-        />
-      </MotionConfig>
+      <WorkspaceErrorBoundary>
+        <MotionConfig reducedMotion="user">
+          <LoginView
+            externalError={authError}
+            onLoginSuccess={(loggedInUser) => {
+              justSignedInRef.current = true;
+              setAuthError(null);
+              clearWorkspaceState();
+              setUser(loggedInUser);
+              setActiveNav('overview');
+            }}
+          />
+        </MotionConfig>
+      </WorkspaceErrorBoundary>
     );
   }
 
   const currentNavMeta = NAV_ITEMS.find((n) => n.id === activeNav) || NAV_ITEMS[0];
 
   return (
-    <MotionConfig reducedMotion="user">
-      <div className="min-h-screen bg-slate-50 text-slate-900 flex">
+    <WorkspaceErrorBoundary onSignOut={handleLogout}>
+      <MotionConfig reducedMotion="user">
+        <div className="min-h-screen bg-slate-50 text-slate-900 flex">
         {/* Desktop Sidebar */}
         <aside className="hidden lg:flex lg:w-[248px] lg:flex-col lg:fixed lg:inset-y-0 bg-white border-r border-slate-200 z-30 no-print">
           <div className="h-16 px-5 border-b border-slate-200 flex items-center gap-2.5">
@@ -678,6 +786,22 @@ export default function App() {
 
           {/* Main Workspace Viewport */}
           <main className="flex-1 p-4 lg:p-6 max-w-[1400px] w-full mx-auto">
+            {workspaceError && activeNav !== 'overview' && (
+              <div
+                role="alert"
+                className="mb-4 flex flex-wrap items-center justify-between gap-3 p-3.5 rounded-xl bg-red-50 border border-red-200 text-xs text-red-800"
+              >
+                <span>{workspaceError}</span>
+                <button
+                  type="button"
+                  onClick={() => loadWorkspaceData(dashboardDays)}
+                  className="px-3 py-1.5 font-semibold text-red-800 bg-white border border-red-300 rounded-md hover:bg-red-100"
+                >
+                  Retry Load
+                </button>
+              </div>
+            )}
+
             {activeNav === 'overview' && (
               <OverviewView
                 data={dashboard}
@@ -688,6 +812,9 @@ export default function App() {
                 onDraftPOFromAlert={handleDraftPOFromAlert}
                 onOpenChatbot={() => setChatDrawerOpen(true)}
                 loading={loadingWorkspace && !dashboard}
+                error={workspaceError}
+                onRetry={() => loadWorkspaceData(dashboardDays)}
+                onSignOut={handleLogout}
               />
             )}
 
@@ -850,6 +977,7 @@ export default function App() {
           )}
         </AnimatePresence>
       </div>
-    </MotionConfig>
+      </MotionConfig>
+    </WorkspaceErrorBoundary>
   );
 }
