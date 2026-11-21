@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   AlertCircle,
+  AlertTriangle,
   Building2,
   CheckCircle2,
   Eye,
@@ -44,6 +45,24 @@ export function LoginView({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  const [ephemeralStorage, setEphemeralStorage] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    fetch('/api/health')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data: { ephemeralStorage?: boolean } | null) => {
+        if (active && data?.ephemeralStorage) {
+          setEphemeralStorage(true);
+        }
+      })
+      .catch(() => {
+        // ignore health probe error
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const clearFeedback = () => {
     setError(null);
@@ -249,6 +268,19 @@ export function LoginView({
               </button>
             ))}
           </div>
+
+          {ephemeralStorage && (
+            <div
+              role="status"
+              className="mb-4 flex items-start gap-2.5 p-3 rounded-lg bg-amber-50 border border-amber-200 text-xs text-amber-900"
+            >
+              <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5 text-amber-600" aria-hidden="true" />
+              <span>
+                <strong>Serverless Temporary Storage:</strong> This Vercel preview stores SQLite data in ephemeral{' '}
+                <code>/tmp</code>, which resets across cold starts and serverless instances. Accounts created here may not persist across sign-ins unless deployed on a persistent Node/Docker host or connected to an external database.
+              </span>
+            </div>
+          )}
 
           {error && (
             <div

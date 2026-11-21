@@ -1,7 +1,28 @@
-let inMemoryToken: string | null = null;
+const SESSION_TOKEN_KEY = 'smartstock_auth_token';
+
+function readTabToken(): string | null {
+  try {
+    return typeof window !== 'undefined' ? window.sessionStorage.getItem(SESSION_TOKEN_KEY) : null;
+  } catch {
+    return null;
+  }
+}
+
+let inMemoryToken: string | null = readTabToken();
 
 export function setAuthToken(token: string | null) {
   inMemoryToken = token;
+  try {
+    if (typeof window !== 'undefined') {
+      if (token) {
+        window.sessionStorage.setItem(SESSION_TOKEN_KEY, token);
+      } else {
+        window.sessionStorage.removeItem(SESSION_TOKEN_KEY);
+      }
+    }
+  } catch {
+    // Ignore storage access errors in restricted frames
+  }
 }
 
 export function getAuthToken(): string | null {

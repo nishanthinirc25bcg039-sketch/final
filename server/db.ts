@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import crypto from 'node:crypto';
@@ -22,25 +23,49 @@ import type {
   UserRole,
 } from '../src/shared/types';
 
+const isVercelRuntime = Boolean(process.env.VERCEL || process.env.VERCEL_ENV);
+
 function resolveDatabasePath(): string {
   const raw = process.env.DATABASE_PATH?.trim();
+  const defaultLocalPath = path.resolve(process.cwd(), 'data', 'smartstock.db');
+  const vercelTmpPath = path.join(os.tmpdir(), 'smartstock.db');
+
   if (!raw) {
-    return path.resolve(process.cwd(), 'data', 'smartstock.db');
+    if (isVercelRuntime) {
+      console.warn(
+        'VERCEL runtime detected with no writable persistent volume; using ephemeral /tmp/smartstock.db. Use a persistent Node server or external database for durable production storage.'
+      );
+      return vercelTmpPath;
+    }
+    return defaultLocalPath;
   }
+
   const looksLikeNonPathSecret =
     /^sb_/i.test(raw) ||
     /^https?:\/\//i.test(raw) ||
     (!raw.includes('/') && !raw.includes('\\') && !/\.(db|sqlite|sqlite3)$/i.test(raw));
   if (looksLikeNonPathSecret) {
     console.warn(
-      'Ignoring invalid DATABASE_PATH value (expected a .db/.sqlite file path); defaulting to ./data/smartstock.db'
+      'Ignoring invalid DATABASE_PATH value (expected a .db/.sqlite file path); defaulting to writable smartstock.db path'
     );
-    return path.resolve(process.cwd(), 'data', 'smartstock.db');
+    return isVercelRuntime ? vercelTmpPath : defaultLocalPath;
   }
-  return path.resolve(raw);
+
+  const resolved = path.resolve(raw);
+  if (isVercelRuntime && !resolved.startsWith(os.tmpdir())) {
+    console.warn(
+      `Vercel serverless filesystem outside ${os.tmpdir()} is read-only; redirecting DATABASE_PATH to ${vercelTmpPath}`
+    );
+    return vercelTmpPath;
+  }
+  return resolved;
 }
 
 const resolvedDbPath = resolveDatabasePath();
+
+export function isEphemeralDatabase(): boolean {
+  return isVercelRuntime && resolvedDbPath.startsWith(os.tmpdir());
+}
 
 const dataDir = path.dirname(resolvedDbPath);
 if (!fs.existsSync(dataDir)) {
@@ -251,6 +276,16 @@ function runMigrations() {
         CREATE INDEX IF NOT EXISTS idx_alerts_business_status ON low_stock_alerts(business_id, status);
       `,
     },
+    {
+      version: 2,
+      name: 'create_app_meta_table',
+      sql: `
+        CREATE TABLE IF NOT EXISTS app_meta (
+          key TEXT PRIMARY KEY,
+          value TEXT NOT NULL
+        );
+      `,
+    },
   ];
 
   for (const m of migrations) {
@@ -276,6 +311,23 @@ function runMigrations() {
 }
 
 runMigrations();
+
+export function getOrCreateSessionSecret(): string {
+  const existing = db
+    .prepare("SELECT value FROM app_meta WHERE key = 'session_secret'")
+    .get() as { value: string } | undefined;
+  if (existing?.value && existing.value.length >= 32) {
+    return existing.value;
+  }
+  const generated = crypto.randomBytes(32).toString('hex');
+  db.prepare("INSERT OR IGNORE INTO app_meta (key, value) VALUES ('session_secret', ?)").run(
+    generated
+  );
+  const stored = db
+    .prepare("SELECT value FROM app_meta WHERE key = 'session_secret'")
+    .get() as { value: string } | undefined;
+  return stored?.value || generated;
+}
 
 function mapUser(r: Record<string, unknown>): User {
   return {

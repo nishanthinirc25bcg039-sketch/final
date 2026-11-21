@@ -3,10 +3,24 @@ import type { NextFunction, Request, Response } from 'express';
 import type { User, UserRole } from '../src/shared/types';
 
 const EPHEMERAL_SECRET = crypto.randomBytes(32).toString('hex');
+let fallbackSecretProvider: (() => string) | null = null;
+
+export function registerFallbackSecretProvider(provider: () => string) {
+  fallbackSecretProvider = provider;
+}
 
 function getSigningSecret(): string {
   const envSecret = process.env.SESSION_SECRET?.trim();
-  return envSecret && envSecret.length >= 16 ? envSecret : EPHEMERAL_SECRET;
+  if (envSecret && envSecret.length >= 16) return envSecret;
+  if (fallbackSecretProvider) {
+    try {
+      const persisted = fallbackSecretProvider();
+      if (persisted && persisted.length >= 16) return persisted;
+    } catch {
+      // fall back to process secret
+    }
+  }
+  return EPHEMERAL_SECRET;
 }
 
 export function validatePasswordStrength(password: string): string | null {
@@ -201,17 +215,32 @@ export function createRateLimiter(options: {
   };
 }
 
-export function setSessionCookie(res: Response, token: string, rememberMe: boolean) {
+export function isHttpsRequest(req: Request): boolean {
+  const forwarded = req.headers['x-forwarded-proto'];
+  if (typeof forwarded === 'string' && forwarded.split(',')[0].trim() === 'https') {
+    return true;
+  }
+  return Boolean(req.secure);
+}
+
+export function setSessionCookie(
+  res: Response,
+  token: string,
+  rememberMe: boolean,
+  isHttps = true
+) {
   const maxAge = rememberMe ? 7 * 24 * 60 * 60 : 12 * 60 * 60;
+  const securityFlags = isHttps ? 'Secure; SameSite=None; Partitioned' : 'SameSite=Lax';
   res.setHeader(
     'Set-Cookie',
-    `smartstock_session=${encodeURIComponent(token)}; Path=/; Max-Age=${maxAge}; HttpOnly; Secure; SameSite=None; Partitioned`
+    `smartstock_session=${encodeURIComponent(token)}; Path=/; Max-Age=${maxAge}; HttpOnly; ${securityFlags}`
   );
 }
 
-export function clearSessionCookie(res: Response) {
+export function clearSessionCookie(res: Response, isHttps = true) {
+  const securityFlags = isHttps ? 'Secure; SameSite=None; Partitioned' : 'SameSite=Lax';
   res.setHeader(
     'Set-Cookie',
-    'smartstock_session=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=None; Partitioned'
+    `smartstock_session=; Path=/; Max-Age=0; HttpOnly; ${securityFlags}`
   );
 }
