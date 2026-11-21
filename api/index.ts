@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { createApiApp } from '../server/app';
+import { createApiApp } from '../server/app.js';
 
 const app = createApiApp();
 

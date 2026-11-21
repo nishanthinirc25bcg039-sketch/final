@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import type { NextFunction, Request, Response } from 'express';
-import type { User, UserRole } from '../src/shared/types';
+import type { User, UserRole } from '../src/shared/types.js';
 
 const EPHEMERAL_SECRET = crypto.randomBytes(32).toString('hex');
 let fallbackSecretProvider: (() => string) | null = null;

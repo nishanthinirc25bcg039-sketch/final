@@ -7,7 +7,7 @@ import type {
   StockStatus,
   StockTransaction,
   TransactionType,
-} from './types';
+} from './types.js';
 
 export function getStockStatus(quantity: number, reorderPoint: number): StockStatus {
   if (quantity <= 0) return 'out_of_stock';

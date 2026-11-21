@@ -1,13 +1,14 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
+import { createRequire } from 'node:module';
+import type { DatabaseSync as DatabaseSyncType } from 'node:sqlite';
 import crypto from 'node:crypto';
-import { hashPassword, hashResetToken } from './auth';
+import { hashPassword, hashResetToken } from './auth.js';
 import {
   calculateRecommendedReorderQty,
   getStockStatus,
-} from '../src/shared/inventoryLogic';
+} from '../src/shared/inventoryLogic.js';
 import type {
   AppSettings,
   LowStockAlert,
@@ -21,7 +22,7 @@ import type {
   TransactionType,
   User,
   UserRole,
-} from '../src/shared/types';
+} from '../src/shared/types.js';
 
 const isVercelRuntime = Boolean(process.env.VERCEL || process.env.VERCEL_ENV);
 
@@ -67,18 +68,39 @@ export function isEphemeralDatabase(): boolean {
   return isVercelRuntime && resolvedDbPath.startsWith(os.tmpdir());
 }
 
-const dataDir = path.dirname(resolvedDbPath);
-if (!fs.existsSync(dataDir)) {
-  fs.mkdirSync(dataDir, { recursive: true });
+let db!: DatabaseSyncType;
+let dbInitError: string | null = null;
+
+function loadDatabaseSync(): typeof DatabaseSyncType {
+  const procWithBuiltin = process as unknown as {
+    getBuiltinModule?: (id: string) => { DatabaseSync?: typeof DatabaseSyncType } | undefined;
+  };
+  const builtin = procWithBuiltin.getBuiltinModule?.('node:sqlite');
+  if (builtin?.DatabaseSync) {
+    return builtin.DatabaseSync;
+  }
+  const req = createRequire(import.meta.url);
+  const mod = req('node:sqlite') as { DatabaseSync?: typeof DatabaseSyncType };
+  if (!mod?.DatabaseSync) {
+    throw new Error(
+      `Built-in node:sqlite module is unavailable on Node ${process.version}. Node.js 22.x or 24.x is required.`
+    );
+  }
+  return mod.DatabaseSync;
 }
 
-const db = new DatabaseSync(resolvedDbPath);
+export function getDatabaseInitError(): string | null {
+  return dbInitError;
+}
 
 function runMigrations() {
+  db.exec('PRAGMA foreign_keys = ON;');
+  try {
+    db.exec('PRAGMA journal_mode = WAL;');
+  } catch {
+    // Some serverless /tmp mounts do not support WAL locking; default journal mode works
+  }
   db.exec(`
-    PRAGMA foreign_keys = ON;
-    PRAGMA journal_mode = WAL;
-
     CREATE TABLE IF NOT EXISTS schema_migrations (
       version INTEGER PRIMARY KEY,
       name TEXT NOT NULL,
@@ -310,7 +332,22 @@ function runMigrations() {
   }
 }
 
-runMigrations();
+function initDatabase() {
+  const dataDir = path.dirname(resolvedDbPath);
+  if (!fs.existsSync(dataDir)) {
+    fs.mkdirSync(dataDir, { recursive: true });
+  }
+  const DatabaseSyncCtor = loadDatabaseSync();
+  db = new DatabaseSyncCtor(resolvedDbPath);
+  runMigrations();
+}
+
+try {
+  initDatabase();
+} catch (err) {
+  dbInitError = err instanceof Error ? err.message : String(err);
+  console.error('SmartStock SQLite initialization error:', dbInitError);
+}
 
 export function getOrCreateSessionSecret(): string {
   const existing = db

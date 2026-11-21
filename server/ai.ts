@@ -2,14 +2,14 @@ import { GoogleGenAI, Type } from '@google/genai';
 import {
   analyzeDemandTrends,
   calculateInventoryValuation,
-} from '../src/shared/inventoryLogic';
+} from '../src/shared/inventoryLogic.js';
 import type {
   AIInsightsPayload,
   ChatResponsePayload,
   Product,
   PurchaseOrder,
   StockTransaction,
-} from '../src/shared/types';
+} from '../src/shared/types.js';
 
 function getConfiguredGeminiKey(): string | null {
   const key = process.env.GEMINI_API_KEY?.trim();

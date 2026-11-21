@@ -13,7 +13,7 @@ import {
   verifyAuthToken,
   verifyPassword,
   type AuthenticatedRequest,
-} from './auth';
+} from './auth.js';
 import {
   consumePasswordResetToken,
   createPasswordResetToken,
@@ -25,6 +25,7 @@ import {
   deleteProduct,
   deleteSupplier,
   exportBusinessBackup,
+  getDatabaseInitError,
   getOrCreateSessionSecret,
   getProductById,
   getPurchaseOrderById,
@@ -48,8 +49,8 @@ import {
   updateSupplier,
   updateUser,
   updateUserPassword,
-} from './db';
-import { answerInventoryChat, generateInventoryInsights } from './ai';
+} from './db.js';
+import { answerInventoryChat, generateInventoryInsights } from './ai.js';
 import {
   analyzeDemandTrends,
   buildDailyBriefing,
@@ -59,8 +60,8 @@ import {
   validateProductInput,
   validateStockMovement,
   validateSupplierInput,
-} from '../src/shared/inventoryLogic';
-import type { PurchaseOrderStatus, TransactionType, UserRole } from '../src/shared/types';
+} from '../src/shared/inventoryLogic.js';
+import type { PurchaseOrderStatus, TransactionType, UserRole } from '../src/shared/types.js';
 
 registerFallbackSecretProvider(getOrCreateSessionSecret);
 
@@ -85,10 +86,33 @@ export function createApiApp(): express.Express {
 
   // Health
   app.get('/api/health', (_req, res) => {
+    const dbErr = getDatabaseInitError();
+    if (dbErr) {
+      res.status(503).json({
+        ok: false,
+        error: dbErr,
+        nodeVersion: process.version,
+        ephemeralStorage: isEphemeralDatabase(),
+      });
+      return;
+    }
     res.json({
       ok: true,
       ephemeralStorage: isEphemeralDatabase(),
+      nodeVersion: process.version,
     });
+  });
+
+  // Return structured 503 diagnostics instead of crashing serverless invocations if DB runtime failed
+  app.use('/api', (_req, res, next) => {
+    const dbErr = getDatabaseInitError();
+    if (dbErr) {
+      res.status(503).json({
+        error: `Database unavailable on Node ${process.version}: ${dbErr}. Set Node.js Version to 22.x or 24.x in Vercel Project Settings.`,
+      });
+      return;
+    }
+    next();
   });
 
   // Auth: Register New Business Workspace + Admin
